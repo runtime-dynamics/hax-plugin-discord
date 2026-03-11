@@ -4,7 +4,7 @@ description: Bi-directional Discord communication plugin for Hyperax
 type: service
 author: Hyperax
 license: Apache-2.0
-source_repo: github.com/nitecon/hax-plugin-discord
+source_repo: github.com/runtime-dynamics/hax-plugin-discord
 min_hyperax_version: "1.0.0"
 api_version: "1"
 entrypoint: hax-plugin-discord
