@@ -108,7 +108,11 @@ func main() {
 		logger.Error("failed to connect to Discord", "error", err)
 		os.Exit(1)
 	}
-	defer session.Close()
+	defer func() {
+		if err := session.Close(); err != nil {
+			logger.Error("failed to close Discord session", "error", err)
+		}
+	}()
 
 	logger.Info("connected to Discord", "user", session.State.User.Username)
 

@@ -100,7 +100,7 @@ func (s *Server) toolSendMessage(_ context.Context, raw json.RawMessage) (*ToolR
 
 	msg, err := s.session.ChannelMessageSendComplex(args.ChannelID, msgSend)
 	if err != nil {
-		return nil, fmt.Errorf("Discord API error: %w", err)
+		return nil, fmt.Errorf("discord API error: %w", err)
 	}
 
 	return &ToolResult{
@@ -132,7 +132,7 @@ func (s *Server) toolReadHistory(_ context.Context, raw json.RawMessage) (*ToolR
 
 	messages, err := s.session.ChannelMessages(args.ChannelID, limit, args.BeforeID, "", "")
 	if err != nil {
-		return nil, fmt.Errorf("Discord API error: %w", err)
+		return nil, fmt.Errorf("discord API error: %w", err)
 	}
 
 	type messageInfo struct {
@@ -153,7 +153,7 @@ type listChannelsArgs struct{ GuildID string `json:"guild_id,omitempty"` }
 
 func (s *Server) toolListChannels(_ context.Context, raw json.RawMessage) (*ToolResult, error) {
 	var args listChannelsArgs
-	if raw != nil && len(raw) > 0 {
+	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
@@ -164,7 +164,7 @@ func (s *Server) toolListChannels(_ context.Context, raw json.RawMessage) (*Tool
 
 	channels, err := s.session.GuildChannels(guildID)
 	if err != nil {
-		return nil, fmt.Errorf("Discord API error: %w", err)
+		return nil, fmt.Errorf("discord API error: %w", err)
 	}
 
 	type channelInfo struct {
@@ -197,7 +197,7 @@ func (s *Server) toolGetMessage(_ context.Context, raw json.RawMessage) (*ToolRe
 	if !s.cfg.IsChannelAllowed(args.ChannelID) { return nil, fmt.Errorf("channel %s is not in the allowed channels list", args.ChannelID) }
 
 	msg, err := s.session.ChannelMessage(args.ChannelID, args.MessageID)
-	if err != nil { return nil, fmt.Errorf("Discord API error: %w", err) }
+	if err != nil { return nil, fmt.Errorf("discord API error: %w", err) }
 
 	type messageDetail struct {
 		ID string `json:"id"`; ChannelID string `json:"channel_id"`; GuildID string `json:"guild_id"`
@@ -227,7 +227,7 @@ func (s *Server) toolReact(_ context.Context, raw json.RawMessage) (*ToolResult,
 	if !s.cfg.IsChannelAllowed(args.ChannelID) { return nil, fmt.Errorf("channel %s is not in the allowed channels list", args.ChannelID) }
 
 	if err := s.session.MessageReactionAdd(args.ChannelID, args.MessageID, args.Emoji); err != nil {
-		return nil, fmt.Errorf("Discord API error: %w", err)
+		return nil, fmt.Errorf("discord API error: %w", err)
 	}
 	return &ToolResult{Content: []ToolContent{{Type: "text", Text: `{"status":"ok"}`}}}, nil
 }
@@ -248,7 +248,7 @@ func (s *Server) toolCreateThread(_ context.Context, raw json.RawMessage) (*Tool
 	} else {
 		thread, err = s.session.ThreadStartComplex(args.ChannelID, &discordgo.ThreadStart{Name: args.Name, AutoArchiveDuration: 1440, Type: discordgo.ChannelTypeGuildPublicThread})
 	}
-	if err != nil { return nil, fmt.Errorf("Discord API error: %w", err) }
+	if err != nil { return nil, fmt.Errorf("discord API error: %w", err) }
 
 	return &ToolResult{Content: []ToolContent{{Type: "text", Text: jsonStr(map[string]string{"thread_id": thread.ID, "name": thread.Name})}}}, nil
 }

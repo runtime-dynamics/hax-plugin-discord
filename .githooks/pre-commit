@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "Running golangci-lint..."
+if ! command -v golangci-lint &> /dev/null; then
+    echo "golangci-lint not found. Install it: https://golangci-lint.run/welcome/install/"
+    exit 1
+fi
+
+golangci-lint run
+echo "Lint passed."

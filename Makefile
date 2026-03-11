@@ -7,7 +7,7 @@ LDFLAGS := -s -w \
 	-X main.commit=$(COMMIT) \
 	-X main.date=$(DATE)
 
-.PHONY: build clean test install
+.PHONY: build clean test install lint setup-hooks
 
 build:
 	go build -ldflags '$(LDFLAGS)' -o $(BINARY) .
@@ -17,6 +17,12 @@ clean:
 
 test:
 	go test -v -race ./...
+
+lint:
+	golangci-lint run
+
+setup-hooks:
+	git config core.hooksPath .githooks
 
 install: build
 	cp $(BINARY) $(GOPATH)/bin/$(BINARY)
