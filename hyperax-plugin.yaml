@@ -1,23 +1,15 @@
 name: discord
-version: 1.0.0
+version: 0.0.1
 description: Bi-directional Discord communication plugin for Hyperax
 type: service
 author: Hyperax
 license: Apache-2.0
-source_repo: github.com/hyperax/hax-plugin-discord
+source_repo: github.com/nitecon/hax-plugin-discord
 min_hyperax_version: "1.0.0"
 api_version: "1"
 entrypoint: hax-plugin-discord
 integration: channel
 approval_required: true
-
-artifacts:
-  darwin/amd64:  hax-plugin-discord_1.0.0_darwin_amd64.tar.gz
-  darwin/arm64:  hax-plugin-discord_1.0.0_darwin_arm64.tar.gz
-  linux/amd64:   hax-plugin-discord_1.0.0_linux_amd64.tar.gz
-  linux/arm64:   hax-plugin-discord_1.0.0_linux_arm64.tar.gz
-  windows/amd64: hax-plugin-discord_1.0.0_windows_amd64.zip
-  windows/arm64: hax-plugin-discord_1.0.0_windows_arm64.zip
 
 permissions:
   - network:*
