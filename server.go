@@ -124,6 +124,10 @@ type Server struct {
 	verifyMu      sync.RWMutex
 	pendingVerify map[string]*PendingVerification // keyed by user ID
 	verifiedUsers map[string]string               // user ID → DM channel ID
+
+	// Dynamic config verification fields — set via notifications/configChanged.
+	configVerifyUserID  string
+	configVerifyAuthKey string
 }
 
 // ToolHandlerFunc is the signature for a Discord tool implementation.
@@ -298,6 +302,8 @@ func (s *Server) handleMessage(ctx context.Context, data []byte) {
 		s.handleInitialize(req)
 	case "initialized", "notifications/initialized":
 		s.logger.Info("client initialized")
+	case "notifications/configChanged":
+		s.handleConfigChanged(req)
 	case "tools/list":
 		s.handleToolsList(req)
 	case "tools/call":
@@ -354,6 +360,93 @@ func (s *Server) applyConfigOverrides(overrides *InitializeConfig) {
 			s.cfg.AllowedChannels[ch] = true
 		}
 	}
+}
+
+func (s *Server) handleConfigChanged(req JSONRPCRequest) {
+	var params struct {
+		Variable string `json:"variable"`
+		Value    string `json:"value"`
+	}
+	if req.Params != nil {
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			s.logger.Warn("failed to parse configChanged params", "error", err)
+			return
+		}
+	}
+
+	s.logger.Info("config changed", "variable", params.Variable, "value_len", len(params.Value))
+
+	switch params.Variable {
+	case "DISCORD_VERIFY_USER_ID":
+		s.configVerifyUserID = params.Value
+	case "DISCORD_VERIFY_AUTH_KEY":
+		s.configVerifyAuthKey = params.Value
+	case "DISCORD_CHANNELS":
+		s.cfg.AllowedChannels = make(map[string]bool)
+		if params.Value != "" {
+			var channels []string
+			if err := json.Unmarshal([]byte(params.Value), &channels); err == nil {
+				for _, ch := range channels {
+					if ch != "" {
+						s.cfg.AllowedChannels[ch] = true
+					}
+				}
+			}
+		}
+		s.logger.Info("allowed channels updated", "count", len(s.cfg.AllowedChannels))
+		return
+	default:
+		s.logger.Debug("ignoring config change for unknown variable", "variable", params.Variable)
+		return
+	}
+
+	// Attempt verification when both values are present.
+	s.tryConfigVerification()
+}
+
+// tryConfigVerification checks if both DISCORD_VERIFY_USER_ID and DISCORD_VERIFY_AUTH_KEY
+// have been set via config, and if so, attempts to validate the verification.
+func (s *Server) tryConfigVerification() {
+	userID := s.configVerifyUserID
+	authKey := s.configVerifyAuthKey
+	if userID == "" || authKey == "" {
+		return
+	}
+
+	s.logger.Info("attempting DM verification from config", "user_id", userID)
+
+	if !s.ValidateVerification(userID, authKey) {
+		s.logger.Warn("config-driven verification failed", "user_id", userID)
+		s.SendNotification("notifications/event", map[string]any{
+			"type": "discord.dm_verification_failed",
+			"data": map[string]any{
+				"user_id": userID,
+				"reason":  "invalid or expired auth key",
+			},
+		})
+		return
+	}
+
+	s.logger.Info("config-driven verification succeeded", "user_id", userID)
+
+	// Send confirmation DM to the verified user.
+	if dmCh, ok := s.GetVerifiedDMChannel(userID); ok {
+		confirmMsg := "You have been verified successfully. You can now communicate with the bot via DM."
+		if _, err := s.session.ChannelMessageSend(dmCh, confirmMsg); err != nil {
+			s.logger.Warn("failed to send verification confirmation DM", "user_id", userID, "error", err)
+		}
+	}
+
+	s.SendNotification("notifications/event", map[string]any{
+		"type": "discord.dm_verification_completed",
+		"data": map[string]any{
+			"user_id": userID,
+		},
+	})
+
+	// Clear the config values so they don't re-trigger.
+	s.configVerifyUserID = ""
+	s.configVerifyAuthKey = ""
 }
 
 func (s *Server) handleToolsList(req JSONRPCRequest) {

@@ -40,6 +40,16 @@ variables:
     required: false
     description: Log level (debug, info, warn, error)
     default: info
+  - name: DISCORD_VERIFY_USER_ID
+    type: string
+    required: false
+    dynamic: true
+    description: Discord user ID to verify (from the DM verification challenge)
+  - name: DISCORD_VERIFY_AUTH_KEY
+    type: string
+    required: false
+    dynamic: true
+    description: Auth key received via DM to complete user verification
 
 resources:
   - type: cron_job
@@ -182,6 +192,10 @@ events:
     description: Emitted when an unverified user DMs the bot and receives a challenge auth key
   - type: discord.dm_message_received
     description: Emitted when a verified user sends a DM to the bot
+  - type: discord.dm_verification_completed
+    description: Emitted when a user is successfully verified via config
+  - type: discord.dm_verification_failed
+    description: Emitted when a config-driven verification attempt fails
 
 health_check:
   interval: 30s
