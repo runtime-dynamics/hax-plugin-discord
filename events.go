@@ -37,6 +37,13 @@ func (el *EventListener) onMessageCreate(_ *discordgo.Session, m *discordgo.Mess
 	if m.Author != nil && m.Author.ID == el.session.State.User.ID {
 		return
 	}
+
+	// DMs have an empty GuildID — route to DM handler.
+	if m.GuildID == "" {
+		el.handleDMMessage(m)
+		return
+	}
+
 	if !el.cfg.IsChannelAllowed(m.ChannelID) {
 		return
 	}
@@ -58,6 +65,63 @@ func (el *EventListener) onMessageCreate(_ *discordgo.Session, m *discordgo.Mess
 			"author_id":  authorID,
 			"content":    m.Content,
 			"timestamp":  formatTimestamp(m.Timestamp),
+		},
+	})
+}
+
+// handleDMMessage processes a direct message. If the user is already verified,
+// it emits a dm_message_received notification. Otherwise it generates an auth
+// key and sends a challenge response.
+func (el *EventListener) handleDMMessage(m *discordgo.MessageCreate) {
+	userID := ""
+	userName := "unknown"
+	if m.Author != nil {
+		userID = m.Author.ID
+		userName = m.Author.Username
+	}
+
+	// Already-verified user — forward the DM content.
+	if el.server.IsUserVerified(userID) {
+		el.server.SendNotification("notifications/event", map[string]any{
+			"type": "discord.dm_message_received",
+			"data": map[string]any{
+				"message_id": m.ID,
+				"channel_id": m.ChannelID,
+				"user_id":    userID,
+				"user_name":  userName,
+				"content":    m.Content,
+				"timestamp":  formatTimestamp(m.Timestamp),
+			},
+		})
+		return
+	}
+
+	// Unverified user — generate auth key and send challenge.
+	authKey, err := el.server.CreatePendingVerification(userID, m.ChannelID, userName)
+	if err != nil {
+		el.logger.Error("failed to create pending verification", "user_id", userID, "error", err)
+		return
+	}
+
+	challengeMsg := "**Verification Required**\n\n" +
+		"Your auth key: `" + authKey + "`\n\n" +
+		"Please provide this key to the system to complete verification. " +
+		"This key expires in 10 minutes."
+
+	if _, err := el.session.ChannelMessageSend(m.ChannelID, challengeMsg); err != nil {
+		el.logger.Error("failed to send DM challenge", "user_id", userID, "error", err)
+		return
+	}
+
+	el.logger.Info("DM verification challenge sent", "user_id", userID, "user_name", userName)
+
+	el.server.SendNotification("notifications/event", map[string]any{
+		"type": "discord.dm_verification_requested",
+		"data": map[string]any{
+			"user_id":    userID,
+			"user_name":  userName,
+			"auth_key":   authKey,
+			"channel_id": m.ChannelID,
 		},
 	})
 }

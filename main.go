@@ -102,7 +102,8 @@ func main() {
 		discordgo.IntentsGuildMessages |
 		discordgo.IntentsGuildMessageReactions |
 		discordgo.IntentsGuildMembers |
-		discordgo.IntentsMessageContent
+		discordgo.IntentsMessageContent |
+		discordgo.IntentsDirectMessages
 
 	if err := session.Open(); err != nil {
 		logger.Error("failed to connect to Discord", "error", err)

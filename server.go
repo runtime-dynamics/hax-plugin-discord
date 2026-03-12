@@ -3,12 +3,16 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -92,6 +96,17 @@ type ToolDefinition struct {
 	InputSchema json.RawMessage `json:"inputSchema"`
 }
 
+// --- Verification ---
+
+// PendingVerification holds state for a user who has DM'd the bot but not yet
+// been verified by Hyperax.
+type PendingVerification struct {
+	AuthKey     string    `json:"auth_key"`
+	DMChannelID string    `json:"dm_channel_id"`
+	UserName    string    `json:"user_name"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
 // --- Server ---
 
 // Server is the MCP server that reads JSON-RPC from stdin and writes to stdout.
@@ -105,6 +120,10 @@ type Server struct {
 
 	writeMu sync.Mutex
 	encoder *json.Encoder
+
+	verifyMu      sync.RWMutex
+	pendingVerify map[string]*PendingVerification // keyed by user ID
+	verifiedUsers map[string]string               // user ID → DM channel ID
 }
 
 // ToolHandlerFunc is the signature for a Discord tool implementation.
@@ -113,11 +132,13 @@ type ToolHandlerFunc func(ctx context.Context, args json.RawMessage) (*ToolResul
 // NewServer creates an MCP server wired to the Discord session.
 func NewServer(cfg *Config, session *discordgo.Session, logger *slog.Logger) *Server {
 	s := &Server{
-		cfg:     cfg,
-		session: session,
-		logger:  logger,
-		tools:   make(map[string]ToolHandlerFunc),
-		encoder: json.NewEncoder(os.Stdout),
+		cfg:           cfg,
+		session:       session,
+		logger:        logger,
+		tools:         make(map[string]ToolHandlerFunc),
+		encoder:       json.NewEncoder(os.Stdout),
+		pendingVerify: make(map[string]*PendingVerification),
+		verifiedUsers: make(map[string]string),
 	}
 	registerTools(s)
 	return s
@@ -179,6 +200,82 @@ func (s *Server) SendNotification(method string, params any) {
 	if err := s.encoder.Encode(notif); err != nil {
 		s.logger.Error("failed to send notification", "method", method, "error", err)
 	}
+}
+
+// CreatePendingVerification generates a random auth key for the given user and
+// stores it as a pending verification with a 10-minute expiry.
+func (s *Server) CreatePendingVerification(userID, dmChannelID, userName string) (string, error) {
+	keyBytes := make([]byte, 16)
+	if _, err := rand.Read(keyBytes); err != nil {
+		return "", fmt.Errorf("failed to generate auth key: %w", err)
+	}
+	authKey := hex.EncodeToString(keyBytes)
+
+	s.verifyMu.Lock()
+	defer s.verifyMu.Unlock()
+
+	s.pendingVerify[userID] = &PendingVerification{
+		AuthKey:     authKey,
+		DMChannelID: dmChannelID,
+		UserName:    userName,
+		ExpiresAt:   time.Now().Add(10 * time.Minute),
+	}
+
+	return authKey, nil
+}
+
+// ValidateVerification checks the auth key for a user and, if valid, marks them
+// as verified. Returns true on success. Uses constant-time comparison.
+func (s *Server) ValidateVerification(userID, authKey string) bool {
+	s.verifyMu.Lock()
+	defer s.verifyMu.Unlock()
+
+	pending, ok := s.pendingVerify[userID]
+	if !ok {
+		return false
+	}
+	if time.Now().After(pending.ExpiresAt) {
+		delete(s.pendingVerify, userID)
+		return false
+	}
+	if subtle.ConstantTimeCompare([]byte(pending.AuthKey), []byte(authKey)) != 1 {
+		return false
+	}
+
+	s.verifiedUsers[userID] = pending.DMChannelID
+	delete(s.pendingVerify, userID)
+	return true
+}
+
+// IsUserVerified returns true if the user has completed DM verification.
+func (s *Server) IsUserVerified(userID string) bool {
+	s.verifyMu.RLock()
+	defer s.verifyMu.RUnlock()
+	_, ok := s.verifiedUsers[userID]
+	return ok
+}
+
+// GetVerifiedDMChannel returns the DM channel ID for a verified user.
+func (s *Server) GetVerifiedDMChannel(userID string) (string, bool) {
+	s.verifyMu.RLock()
+	defer s.verifyMu.RUnlock()
+	ch, ok := s.verifiedUsers[userID]
+	return ch, ok
+}
+
+// GetPendingVerifications returns a snapshot of all non-expired pending verifications.
+func (s *Server) GetPendingVerifications() map[string]*PendingVerification {
+	s.verifyMu.RLock()
+	defer s.verifyMu.RUnlock()
+
+	now := time.Now()
+	result := make(map[string]*PendingVerification)
+	for uid, pv := range s.pendingVerify {
+		if now.Before(pv.ExpiresAt) {
+			result[uid] = pv
+		}
+	}
+	return result
 }
 
 func (s *Server) handleMessage(ctx context.Context, data []byte) {

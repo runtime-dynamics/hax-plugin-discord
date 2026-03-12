@@ -143,6 +143,34 @@ tools:
     description: Poll monitored channels for new messages (used by cron watcher)
     parameters: []
 
+  - name: discord_verify_user
+    description: Validate a user's DM verification auth key and mark them as verified
+    parameters:
+      - name: user_id
+        type: string
+        required: true
+        description: Discord user ID to verify
+      - name: auth_key
+        type: string
+        required: true
+        description: Auth key the user received via DM
+
+  - name: discord_list_pending_verifications
+    description: List all pending DM verifications that have not yet expired
+    parameters: []
+
+  - name: discord_send_dm
+    description: Send a direct message to a verified user
+    parameters:
+      - name: user_id
+        type: string
+        required: true
+        description: Discord user ID (must be verified)
+      - name: content
+        type: string
+        required: true
+        description: Message text to send
+
 events:
   - type: discord.message_received
     description: Emitted when a message is received in an allowed channel
@@ -150,6 +178,10 @@ events:
     description: Emitted when a reaction is added to a message in an allowed channel
   - type: discord.member_joined
     description: Emitted when a new member joins a guild
+  - type: discord.dm_verification_requested
+    description: Emitted when an unverified user DMs the bot and receives a challenge auth key
+  - type: discord.dm_message_received
+    description: Emitted when a verified user sends a DM to the bot
 
 health_check:
   interval: 30s
