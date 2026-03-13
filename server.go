@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -125,9 +126,11 @@ type Server struct {
 	pendingVerify map[string]*PendingVerification // keyed by user ID
 	verifiedUsers map[string]string               // user ID → DM channel ID
 
-	// Dynamic config verification fields — set via notifications/configChanged.
-	configVerifyUserID  string
-	configVerifyAuthKey string
+	// Owner DM channel — set during owner verification flow.
+	ownerDMChannelID string
+
+	// Dynamic config verification field — set via notifications/configChanged.
+	configOwnerVerificationKey string
 }
 
 // ToolHandlerFunc is the signature for a Discord tool implementation.
@@ -377,10 +380,16 @@ func (s *Server) handleConfigChanged(req JSONRPCRequest) {
 	s.logger.Info("config changed", "variable", params.Variable, "value_len", len(params.Value))
 
 	switch params.Variable {
-	case "DISCORD_VERIFY_USER_ID":
-		s.configVerifyUserID = params.Value
-	case "DISCORD_VERIFY_AUTH_KEY":
-		s.configVerifyAuthKey = params.Value
+	case "DISCORD_OWNER_ID":
+		s.cfg.OwnerID = params.Value
+		if params.Value != "" {
+			if err := s.InitiateOwnerVerification(); err != nil {
+				s.logger.Error("failed to initiate owner verification", "error", err)
+			}
+		}
+	case "DISCORD_OWNER_VERIFICATION_KEY":
+		s.configOwnerVerificationKey = params.Value
+		s.tryOwnerVerification()
 	case "DISCORD_CHANNELS":
 		s.cfg.AllowedChannels = make(map[string]bool)
 		if params.Value != "" {
@@ -394,59 +403,100 @@ func (s *Server) handleConfigChanged(req JSONRPCRequest) {
 			}
 		}
 		s.logger.Info("allowed channels updated", "count", len(s.cfg.AllowedChannels))
-		return
 	default:
 		s.logger.Debug("ignoring config change for unknown variable", "variable", params.Variable)
-		return
 	}
-
-	// Attempt verification when both values are present.
-	s.tryConfigVerification()
 }
 
-// tryConfigVerification checks if both DISCORD_VERIFY_USER_ID and DISCORD_VERIFY_AUTH_KEY
-// have been set via config, and if so, attempts to validate the verification.
-func (s *Server) tryConfigVerification() {
-	userID := s.configVerifyUserID
-	authKey := s.configVerifyAuthKey
-	if userID == "" || authKey == "" {
+// InitiateOwnerVerification opens a DM channel with the configured owner and
+// sends them a verification code. The owner enters this code back into the
+// platform as DISCORD_OWNER_VERIFICATION_KEY to complete verification.
+func (s *Server) InitiateOwnerVerification() error {
+	ownerID := s.cfg.OwnerID
+	if ownerID == "" {
+		return fmt.Errorf("no owner ID configured")
+	}
+
+	// Open a DM channel with the owner.
+	ch, err := s.session.UserChannelCreate(ownerID)
+	if err != nil {
+		return fmt.Errorf("failed to open DM channel with owner: %w", err)
+	}
+
+	s.verifyMu.Lock()
+	s.ownerDMChannelID = ch.ID
+	s.verifyMu.Unlock()
+
+	// Generate verification code.
+	authKey, err := s.CreatePendingVerification(ownerID, ch.ID, "owner")
+	if err != nil {
+		return fmt.Errorf("failed to create verification: %w", err)
+	}
+
+	code := "B-" + authKey
+
+	challengeMsg := "**Hyperax Verification**\n\n" +
+		"Your verification code: `" + code + "`\n\n" +
+		"Enter this code in the Hyperax platform to complete verification. " +
+		"This code expires in 10 minutes."
+
+	if _, err := s.session.ChannelMessageSend(ch.ID, challengeMsg); err != nil {
+		return fmt.Errorf("failed to send verification DM: %w", err)
+	}
+
+	s.logger.Info("owner verification code sent", "owner_id", ownerID)
+	return nil
+}
+
+// tryOwnerVerification checks if both DISCORD_OWNER_ID and
+// DISCORD_OWNER_VERIFICATION_KEY have been set, and if so, validates the code.
+func (s *Server) tryOwnerVerification() {
+	ownerID := s.cfg.OwnerID
+	authKey := s.configOwnerVerificationKey
+	if ownerID == "" || authKey == "" {
 		return
 	}
 
-	s.logger.Info("attempting DM verification from config", "user_id", userID)
+	// Strip the "B-" prefix if present.
+	authKey = strings.TrimPrefix(authKey, "B-")
 
-	if !s.ValidateVerification(userID, authKey) {
-		s.logger.Warn("config-driven verification failed", "user_id", userID)
+	s.logger.Info("attempting owner verification", "owner_id", ownerID)
+
+	if !s.ValidateVerification(ownerID, authKey) {
+		s.logger.Warn("owner verification failed", "owner_id", ownerID)
 		s.SendNotification("notifications/event", map[string]any{
 			"type": "discord.dm_verification_failed",
 			"data": map[string]any{
-				"user_id": userID,
-				"reason":  "invalid or expired auth key",
+				"user_id": ownerID,
+				"reason":  "invalid or expired verification key",
 			},
 		})
 		return
 	}
 
-	s.logger.Info("config-driven verification succeeded", "user_id", userID)
+	s.logger.Info("owner verification succeeded", "owner_id", ownerID)
 
-	// Send confirmation DM to the verified user.
-	if dmCh, ok := s.GetVerifiedDMChannel(userID); ok {
-		confirmMsg := "You have been verified successfully. You can now communicate with the bot via DM."
+	// Send confirmation DM to the owner.
+	if dmCh, ok := s.GetVerifiedDMChannel(ownerID); ok {
+		s.verifyMu.Lock()
+		s.ownerDMChannelID = dmCh
+		s.verifyMu.Unlock()
+
+		confirmMsg := "Verification successful! You can now communicate with the Chief of Staff via DM."
 		if _, err := s.session.ChannelMessageSend(dmCh, confirmMsg); err != nil {
-			s.logger.Warn("failed to send verification confirmation DM", "user_id", userID, "error", err)
+			s.logger.Warn("failed to send verification confirmation DM", "owner_id", ownerID, "error", err)
 		}
 	}
 
 	s.SendNotification("notifications/event", map[string]any{
 		"type": "discord.dm_verification_completed",
 		"data": map[string]any{
-			"user_id": userID,
+			"user_id": ownerID,
 		},
 	})
 
-	// Clear the config values so they don't re-trigger.
-	s.configVerifyUserID = ""
-	s.configVerifyAuthKey = ""
+	// Clear so it doesn't re-trigger.
+	s.configOwnerVerificationKey = ""
 }
 
 func (s *Server) handleToolsList(req JSONRPCRequest) {

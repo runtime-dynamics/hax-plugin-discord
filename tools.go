@@ -43,15 +43,11 @@ func registerTools(s *Server) {
 		json.RawMessage(`{"type":"object","properties":{}}`),
 		s.toolPollChannels)
 
-	s.RegisterTool("discord_verify_user", "Validate a user's DM verification auth key and mark them as verified.",
-		json.RawMessage(`{"type":"object","properties":{"user_id":{"type":"string","description":"Discord user ID to verify"},"auth_key":{"type":"string","description":"Auth key the user received via DM"}},"required":["user_id","auth_key"]}`),
-		s.toolVerifyUser)
+	s.RegisterTool("discord_initiate_owner_verification", "Open a DM channel with the owner and send them a verification code.",
+		json.RawMessage(`{"type":"object","properties":{"user_id":{"type":"string","description":"Discord user ID of the owner to verify"}},"required":["user_id"]}`),
+		s.toolInitiateOwnerVerification)
 
-	s.RegisterTool("discord_list_pending_verifications", "List all pending DM verifications that have not yet expired.",
-		json.RawMessage(`{"type":"object","properties":{}}`),
-		s.toolListPendingVerifications)
-
-	s.RegisterTool("discord_send_dm", "Send a direct message to a verified user.",
+	s.RegisterTool("discord_send_dm", "Send a direct message to the verified owner.",
 		json.RawMessage(`{"type":"object","properties":{"user_id":{"type":"string","description":"Discord user ID (must be verified)"},"content":{"type":"string","description":"Message text to send"}},"required":["user_id","content"]}`),
 		s.toolSendDM)
 }
@@ -293,66 +289,31 @@ func (s *Server) toolPollChannels(_ context.Context, _ json.RawMessage) (*ToolRe
 	return &ToolResult{Content: []ToolContent{{Type: "text", Text: fmt.Sprintf(`{"status":"ok","channels_polled":%d}`, polled)}}}, nil
 }
 
-// --- DM Verification Tool Implementations ---
+// --- Owner Verification Tool Implementation ---
 
-type verifyUserArgs struct {
-	UserID  string `json:"user_id"`
-	AuthKey string `json:"auth_key"`
-}
-
-func (s *Server) toolVerifyUser(_ context.Context, raw json.RawMessage) (*ToolResult, error) {
-	var args verifyUserArgs
+func (s *Server) toolInitiateOwnerVerification(_ context.Context, raw json.RawMessage) (*ToolResult, error) {
+	var args struct {
+		UserID string `json:"user_id"`
+	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
 	if args.UserID == "" {
 		return nil, fmt.Errorf("user_id is required")
 	}
-	if args.AuthKey == "" {
-		return nil, fmt.Errorf("auth_key is required")
-	}
 
-	if !s.ValidateVerification(args.UserID, args.AuthKey) {
-		return &ToolResult{
-			Content: []ToolContent{{Type: "text", Text: `{"verified":false,"reason":"invalid or expired auth key"}`}},
-			IsError: true,
-		}, nil
-	}
-
-	// Send confirmation DM to the user.
-	if dmCh, ok := s.GetVerifiedDMChannel(args.UserID); ok {
-		confirmMsg := "You have been verified successfully. You can now communicate with the bot via DM."
-		if _, err := s.session.ChannelMessageSend(dmCh, confirmMsg); err != nil {
-			s.logger.Warn("failed to send verification confirmation DM", "user_id", args.UserID, "error", err)
-		}
+	// Set the owner ID and initiate verification.
+	s.cfg.OwnerID = args.UserID
+	if err := s.InitiateOwnerVerification(); err != nil {
+		return nil, err
 	}
 
 	return &ToolResult{
-		Content: []ToolContent{{Type: "text", Text: `{"verified":true}`}},
+		Content: []ToolContent{{Type: "text", Text: jsonStr(map[string]string{
+			"status":  "sent",
+			"user_id": args.UserID,
+		})}},
 	}, nil
-}
-
-func (s *Server) toolListPendingVerifications(_ context.Context, _ json.RawMessage) (*ToolResult, error) {
-	pending := s.GetPendingVerifications()
-
-	type pendingInfo struct {
-		UserID      string `json:"user_id"`
-		UserName    string `json:"user_name"`
-		DMChannelID string `json:"dm_channel_id"`
-		ExpiresAt   string `json:"expires_at"`
-	}
-
-	var results []pendingInfo
-	for uid, pv := range pending {
-		results = append(results, pendingInfo{
-			UserID:      uid,
-			UserName:    pv.UserName,
-			DMChannelID: pv.DMChannelID,
-			ExpiresAt:   pv.ExpiresAt.Format(time.RFC3339),
-		})
-	}
-
-	return &ToolResult{Content: []ToolContent{{Type: "text", Text: jsonStr(results)}}}, nil
 }
 
 type sendDMArgs struct {

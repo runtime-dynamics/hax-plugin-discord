@@ -29,6 +29,7 @@ type Config struct {
 	GuildID         string
 	AllowedChannels map[string]bool
 	LogLevel        string
+	OwnerID         string
 }
 
 // LoadConfigFromEnv reads plugin configuration from environment variables.
@@ -48,6 +49,8 @@ func LoadConfigFromEnv() *Config {
 		AllowedChannels: make(map[string]bool),
 		LogLevel:        os.Getenv("DISCORD_LOG_LEVEL"),
 	}
+
+	cfg.OwnerID = os.Getenv("DISCORD_OWNER_ID")
 
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = "info"
@@ -123,6 +126,13 @@ func main() {
 	// Register Discord event handlers that emit MCP notifications.
 	listener := NewEventListener(cfg, session, server, logger)
 	listener.Register()
+
+	// If an owner ID is configured, initiate DM verification at startup.
+	if cfg.OwnerID != "" {
+		if err := server.InitiateOwnerVerification(); err != nil {
+			logger.Warn("failed to initiate owner verification at startup", "error", err)
+		}
+	}
 
 	// Signal-driven shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
